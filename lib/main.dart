@@ -33,9 +33,10 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
   // State management
-  String _currentState = 'permission'; // permission, got_permission, list_printer, selected_first_printer
+  String _currentState = 'permission'; // permission, searching, connected, error
   EpsonPrinterModel? _selectedPrinter;
   List<EpsonPrinterModel> _printers = [];
+  String _connectionType = 'none'; // none, usb, wifi, both
   
   // WebView controller
   late final WebViewController _webViewController;
@@ -51,6 +52,10 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
   bool _isRequestingPermission = false;
   bool _isDiscoveringPrinters = false;
   bool _showStatusOverlay = false;
+
+  // Toast message settings
+  bool _showToastMessages = false;
+  int _buttonTapCount = 0;
 
   @override
   void initState() {
@@ -192,10 +197,10 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
       
       if (hasPermission) {
         setState(() {
-          _currentState = 'got_permission';
+          _currentState = 'searching';
         });
-        log("Permission granted, discovering printers...");
-       
+        log("Permission granted, starting automatic printer search...");
+        _discoverAllPrinters();
       } else {
         log("Permission denied");
         _showMessage('Printer access not granted. Please allow access to continue.', isError: true);
@@ -210,6 +215,35 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _discoverAllPrinters() async {
+    try {
+      log("Starting simultaneous USB and network printer discovery...");
+      // Search for both USB and network printers at the same time
+      final usbFuture = PrinterUtils.discoverUSBPrinters();
+      final networkFuture = PrinterUtils.discoverTCPPrinters();
+
+      final usbPrinters = await usbFuture;
+      final networkPrinters = await networkFuture;
+
+      final allPrinters = [...usbPrinters, ...networkPrinters];
+
+      if (allPrinters.isNotEmpty) {
+        log("Found ${allPrinters.length} printers total (${usbPrinters.length} USB, ${networkPrinters.length} network)");
+        await _autoSelectBestPrinter(allPrinters);
+      } else {
+        log("No printers found, will retry in 3 seconds...");
+        // Wait a bit and try again
+        await Future.delayed(const Duration(seconds: 3));
+        _discoverAllPrinters();
+      }
+    } catch (e) {
+      log("Error discovering printers: $e");
+      // Try again after error
+      await Future.delayed(const Duration(seconds: 3));
+      _discoverAllPrinters();
+    }
+  }
+
   Future<void> _discoverPrinters() async {
     try {
       log("Discovering printers...");
@@ -218,12 +252,12 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
       if (allPrinters.isNotEmpty) {
         setState(() {
           _printers = allPrinters;
-          _currentState = 'list_printer';
+          _currentState = 'connected';
         });
-        log("Found ${allPrinters.length} printers total");
-        await _selectFirstPrinter();
+       
+        await _autoSelectBestPrinter(allPrinters);
       } else {
-        log("No printers found, starting continuous discovery...");
+     
         _startContinuousDiscovery();
       }
     } catch (e) {
@@ -235,7 +269,7 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
   void _startContinuousDiscovery() {
     log("Starting continuous printer discovery...");
     _discoveryTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-      if (_currentState == 'selected_first_printer') {
+      if (_currentState == 'connected') {
         timer.cancel();
         return;
       }
@@ -253,14 +287,13 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
         return;
       }
 
-      if (_currentState == 'got_permission') {
-        // timer.cancel();
+      if (_currentState == 'searching') {
+        // Continue searching if no printer found yet
         if (!_isDiscoveringPrinters) {
           _isDiscoveringPrinters = true;
-          await _discoverPrinters();
+          await _discoverAllPrinters();
           _isDiscoveringPrinters = false;
         }
-        // await _discoverPrinters();
         return;
       }
       
@@ -271,18 +304,51 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
         if (allPrinters.isNotEmpty) {
           setState(() {
             _printers = allPrinters;
-            _currentState = 'list_printer';
+            _currentState = 'connected';
           });
-          log("Continuous discovery: Found ${allPrinters.length} printers!");
-          await _selectFirstPrinter();
+          await _autoSelectBestPrinter(allPrinters);
           timer.cancel();
         } else {
-          log("Continuous discovery: No printers found, will retry in 5 seconds...");
         }
       } catch (e) {
-        log("Continuous discovery error: $e");
       }
     });
+  }
+
+  Future<void> _autoSelectBestPrinter(List<EpsonPrinterModel> allPrinters) async {
+    if (allPrinters.isNotEmpty) {
+      // Prioritize network printers first, then USB
+      EpsonPrinterModel? bestPrinter;
+      String detectedConnectionType = 'none';
+
+      // Look for network printers first
+      for (var printer in allPrinters) {
+        if (printer.ipAddress != null && printer.ipAddress!.isNotEmpty && printer.ipAddress != 'USB') {
+          bestPrinter = printer;
+          detectedConnectionType = 'wifi';
+          break;
+        }
+      }
+
+      // If no network printer found, use first USB printer
+      if (bestPrinter == null) {
+        bestPrinter = allPrinters.first;
+        detectedConnectionType = 'usb';
+      }
+
+      setState(() {
+        _selectedPrinter = bestPrinter;
+        _printers = allPrinters;
+        _connectionType = detectedConnectionType;
+        _currentState = 'connected';
+      });
+
+      // Stop blinking animation when printer is found
+      _blinkController.stop();
+
+      log("Auto-selected best printer: ${bestPrinter!.model} via $detectedConnectionType");
+      _showMessage('✓ Printer connected via ${_connectionType.toUpperCase()}');
+    }
   }
 
   Future<void> _selectFirstPrinter() async {
@@ -291,17 +357,18 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
         _selectedPrinter = _printers.first;
         _currentState = 'selected_first_printer';
       });
-      
+
       // Stop blinking animation when printer is found
       _blinkController.stop();
-      
-      log("Selected first printer: ${_selectedPrinter!.model}");
-      final connectionType = _isNetworkPrinter() ? 'WiFi' : 'USB';
-      _showMessage('✓ Printer connected via $connectionType');
+
+      _showMessage('✓ Printer connected via ${_connectionType.toUpperCase()}');
     }
   }
 
   void _showMessage(String message, {bool isError = false}) {
+    // Only show toast messages if the setting is enabled
+    if (!_showToastMessages) return;
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -329,6 +396,83 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
         ),
       );
     }
+  }
+
+  void _handleConnectionButtonTap() {
+    _buttonTapCount++;
+
+    if (_buttonTapCount >= 5) {
+      _buttonTapCount = 0; // Reset counter
+      _showToastSettingsDialog();
+    }
+  }
+
+  void _resetTapCounter() {
+    _buttonTapCount = 0;
+  }
+
+  void _showToastSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Toast Message Settings'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Show toast messages when printing and connecting?'),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  const Text('Toast Messages:'),
+                  const Spacer(),
+                  Switch(
+                    value: _showToastMessages,
+                    onChanged: (bool value) {
+                      setState(() {
+                        _showToastMessages = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _showToastMessages
+                      ? '✅ Toast messages are ENABLED\nMessages will appear when printing and connecting.'
+                      : '❌ Toast messages are DISABLED\nNo messages will appear during operations.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _showToastMessages ? Colors.green.shade700 : Colors.red.shade700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: const Text('Reset Tap Counter'),
+              onPressed: () {
+                _resetTapCounter();
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Close'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _performTestPrint() async {
@@ -413,30 +557,17 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
           if (_showStatusOverlay) _buildStatusOverlay(),
         ],
       ),
-      floatingActionButton: AnimatedBuilder(
+      floatingActionButton: _currentState == 'connected' ? _buildConnectionButtons() : AnimatedBuilder(
         animation: _blinkAnimation,
         builder: (context, child) {
           return Opacity(
-            opacity: _currentState == 'selected_first_printer' ? 1.0 : _blinkAnimation.value,
+            opacity: _currentState == 'connected' ? 1.0 : _blinkAnimation.value,
             child: FloatingActionButton.extended(
               onPressed: _handlePrinterIconTap,
               backgroundColor: _getButtonColor(),
-              icon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    _getStatusIcon(),
-                    color: Colors.white,
-                  ),
-                  if (_isNetworkPrinter()) ...[
-                    const SizedBox(width: 4),
-                    const Icon(
-                      Icons.wifi,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                  ],
-                ],
+              icon: Icon(
+                _getStatusIcon(),
+                color: Colors.white,
               ),
               label: Text(
                 _getStatusMessage(),
@@ -494,29 +625,21 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
             _requestPermission();
           },
         );
-      case 'got_permission':
+      case 'searching':
         return _buildStatusCard(
           icon: Icons.search,
           iconColor: Colors.blue,
-          title: 'Searching for Printer',
-          message: 'Please wait while we locate your printer...',
+          title: 'Auto-Searching for Printers',
+          message: 'Scanning for USB and WiFi printers automatically...',
           showProgress: true,
         );
-      case 'list_printer':
+      case 'connected':
         return _buildStatusCard(
-          icon: Icons.print,
-          iconColor: Colors.purple,
-          title: 'Printer Found',
-          message: 'Connecting to ${_printers.length} printer${_printers.length > 1 ? 's' : ''}...',
-          showProgress: true,
-        );
-      case 'selected_first_printer':
-        return _buildStatusCard(
-          icon: Icons.check_circle,
+          icon: _connectionType == 'wifi' ? Icons.wifi : Icons.usb,
           iconColor: Colors.green,
-          title: 'Printer Ready',
+          title: 'Printer Connected',
           message: 'Connected to ${_selectedPrinter?.model ?? "printer"}',
-          subtitle: _isNetworkPrinter() 
+          subtitle: _connectionType == 'wifi'
               ? 'Connected via WiFi (${_selectedPrinter?.ipAddress ?? ""})'
               : 'Connected via USB',
         );
@@ -644,16 +767,71 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildConnectionButtons() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        // WiFi Button
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: FloatingActionButton.extended(
+            heroTag: "wifi",
+            onPressed: () {
+              _handleConnectionButtonTap();
+              if (_connectionType == 'wifi') {
+                _performTestPrint();
+              }
+            },
+            backgroundColor: _connectionType == 'wifi' ? Colors.green : Colors.grey.shade700,
+            icon: Icon(
+              Icons.wifi,
+              color: _connectionType == 'wifi' ? Colors.white : Colors.grey.shade400,
+            ),
+            label: Text(
+              'WiFi',
+              style: TextStyle(
+                color: _connectionType == 'wifi' ? Colors.white : Colors.grey.shade400,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+        // USB Button
+        FloatingActionButton.extended(
+          heroTag: "usb",
+          onPressed: () {
+            _handleConnectionButtonTap();
+            if (_connectionType == 'usb') {
+              _performTestPrint();
+            }
+          },
+          backgroundColor: _connectionType == 'usb' ? Colors.green : Colors.grey.shade700,
+          icon: Icon(
+            Icons.usb,
+            color: _connectionType == 'usb' ? Colors.white : Colors.grey.shade400,
+          ),
+          label: Text(
+            'USB',
+            style: TextStyle(
+              color: _connectionType == 'usb' ? Colors.white : Colors.grey.shade400,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Color _getButtonColor() {
     switch (_currentState) {
       case 'permission':
         return Colors.orange;
-      case 'got_permission':
+      case 'searching':
         return Colors.blue;
-      case 'list_printer':
-        return Colors.purple;
-      case 'selected_first_printer':
+      case 'connected':
         return Colors.green;
+      case 'error':
+        return Colors.red;
       default:
         return Colors.blue;
     }
@@ -663,12 +841,12 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     switch (_currentState) {
       case 'permission':
         return Icons.usb;
-      case 'got_permission':
+      case 'searching':
         return Icons.search;
-      case 'list_printer':
-        return Icons.print;
-      case 'selected_first_printer':
-        return Icons.check_circle;
+      case 'connected':
+        return _connectionType == 'wifi' ? Icons.wifi : Icons.usb;
+      case 'error':
+        return Icons.error;
       default:
         return Icons.print;
     }
@@ -678,22 +856,19 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     switch (_currentState) {
       case 'permission':
         return 'Permission Needed';
-      case 'got_permission':
+      case 'searching':
         return 'Searching...';
-      case 'list_printer':
-        return 'Found ${_printers.length}';
-      case 'selected_first_printer':
-        return 'Ready to Print';
+      case 'connected':
+        return 'Connected via ${_connectionType.toUpperCase()}';
+      case 'error':
+        return 'Connection Error';
       default:
         return 'Checking...';
     }
   }
 
   bool _isNetworkPrinter() {
-    if (_selectedPrinter == null) return false;
-    return _selectedPrinter!.ipAddress != null && 
-           _selectedPrinter!.ipAddress!.isNotEmpty &&
-           _selectedPrinter!.ipAddress != 'USB';
+    return _connectionType == 'wifi';
   }
 
   void _handlePrinterIconTap() {
@@ -703,7 +878,7 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     
     if (_currentState == 'permission') {
       // User will tap the button in the overlay
-    } else if (_currentState == 'selected_first_printer') {
+    } else if (_currentState == 'connected') {
       // Close overlay and perform test print
       Future.delayed(const Duration(milliseconds: 100), () {
         setState(() => _showStatusOverlay = false);
