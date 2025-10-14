@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB device filter for Epson TM-T88VI thermal printer -->
+    <usb-device 
+        vendor-id="1208" 
+        product-id="1" 
+        class="7" 
+        subclass="1" 
+        protocol="1" />
+    
+    <!-- Alternative filter for TM-T88VI with different product ID -->
+    <usb-device 
+        vendor-id="1208" 
+        product-id="2" 
+        class="7" 
+        subclass="1" 
+        protocol="1" />
+    
+    <!-- Generic Epson printer filter -->
+    <usb-device 
+        vendor-id="1208" 
+        class="7" 
+        subclass="1" 
+        protocol="1" />
+</resources>
