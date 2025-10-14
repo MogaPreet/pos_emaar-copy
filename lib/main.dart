@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:epson_epos/epson_epos.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -13,6 +14,8 @@ void main() {
   if (Platform.isAndroid) {
     AndroidWebViewController.enableDebugging(true);
   }
+  // Hide status/navigation bars for immersive full-screen UI
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   
   runApp(MaterialApp(
     title: 'POS Emaar',
@@ -95,10 +98,79 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
         NavigationDelegate(
           onPageFinished: (String url) {
             log("Page loaded: $url");
+            // Inject bridge so pages using inappwebview/react-native APIs relay to FlutterPrint
+            _injectWebBridge();
           },
         ),
       )
       ..loadRequest(Uri.parse('https://dbaccess.thinkry.tech/'));
+  }
+
+  void _injectWebBridge() {
+    const js = r"""
+      (function() {
+        try {
+          // Ensure FlutterPrint channel shim exists check
+          var sendToFlutter = function(payload) {
+            try {
+              if (window.FlutterPrint && typeof window.FlutterPrint.postMessage === 'function') {
+                window.FlutterPrint.postMessage(payload);
+              } else {
+                console.warn('FlutterPrint channel not available');
+              }
+            } catch (e) { console.error('Error posting to FlutterPrint', e); }
+          };
+
+          // Shim for flutter_inappwebview.callHandler(name, jsonString)
+          if (!window.flutter_inappwebview) {
+            window.flutter_inappwebview = {
+              callHandler: function(name, data) {
+                try {
+                  var message = data;
+                  if (typeof data !== 'string') { message = JSON.stringify(data); }
+                  // Forward only known handlers; others still forward raw
+                  sendToFlutter(message);
+                } catch (e) { console.error('callHandler error', e); }
+              }
+            };
+          }
+
+          // Shim for ReactNativeWebView.postMessage
+          if (!window.ReactNativeWebView) {
+            window.ReactNativeWebView = {
+              postMessage: function(data) {
+                try {
+                  var message = data;
+                  if (typeof data !== 'string') { message = JSON.stringify(data); }
+                  sendToFlutter(message);
+                } catch (e) { console.error('postMessage error', e); }
+              }
+            };
+          }
+
+          // Provide convenience global functions if a page calls them
+          if (!window.printReceipt) {
+            window.printReceipt = function(data) {
+              try { sendToFlutter(typeof data === 'string' ? data : JSON.stringify(data)); } catch (e) {}
+            };
+          }
+          if (!window.voidTransaction) {
+            window.voidTransaction = function(data) {
+              try { sendToFlutter(typeof data === 'string' ? data : JSON.stringify({action:'voidTransaction', data:data})); } catch (e) {}
+            };
+          }
+          if (!window.printTicket) {
+            window.printTicket = function(data) {
+              try { sendToFlutter(typeof data === 'string' ? data : JSON.stringify({action:'printTicket', data:data})); } catch (e) {}
+            };
+          }
+          console.log('Flutter webview bridge injected');
+        } catch (e) {
+          console.error('Failed to inject Flutter bridge', e);
+        }
+      })();
+    """;
+    _webViewController.runJavaScript(js);
   }
 
   Future<void> _startInitialization() async {

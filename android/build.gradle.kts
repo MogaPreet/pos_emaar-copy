@@ -15,22 +15,7 @@ subprojects {
     val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
-subprojects {
-    project.evaluationDependsOn(":app")
-}
 
-// Fix for plugins that don't have namespace defined
-subprojects {
-    afterEvaluate {
-        if (extensions.findByName("android") != null) {
-            extensions.configure<com.android.build.gradle.BaseExtension>("android") {
-                if (namespace == null) {
-                    namespace = project.group.toString()
-                }
-            }
-        }
-    }
-}
 
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
