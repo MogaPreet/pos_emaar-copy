@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.emaar.pos.pos_emaar"
+    namespace = "com.example.epos_printer_app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -21,7 +21,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.emaar.pos.pos_emaar"
+        applicationId = "com.example.epos_printer_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -39,11 +39,11 @@ android {
     }
 }
 
-flutter {
-    source = "../.."
+dependencies {
+    implementation(files("libs/ePOS2.jar"))
+    implementation(files("libs/ePOSEasySelect.jar"))
 }
 
-dependencies {
-    // Epson ePOS2 SDK is already included by the epson_epos Flutter plugin
-    // No need to add it manually to avoid duplicate class errors
+flutter {
+    source = "../.."
 }

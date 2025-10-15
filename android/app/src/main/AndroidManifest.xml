@@ -1,14 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Network permissions -->
+    <!-- USB permissions for Epson printer -->
+    <uses-permission android:name="android.permission.USB_PERMISSION" />
+    <uses-feature android:name="android.hardware.usb.host" />
+    
+    <!-- Internet permission for WebView -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     
-    <!-- USB permissions for Epson TM-T88VI thermal printer -->
-    <uses-permission android:name="android.permission.USB_PERMISSION" />
-    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
-    
     <application
-        android:label="pos_emaar"
+        android:label="epos_printer_app"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
@@ -34,24 +34,13 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            
-            <!-- USB device filter for Epson TM-T88VI thermal printer -->
+            <!-- USB device filter for Epson printers -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
             <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
-            
-            <!-- USB permission intent filter -->
-            <intent-filter>
-                <action android:name="com.emaar.pos.USB_PERMISSION" />
-            </intent-filter>
         </activity>
-        <!-- Epson ePOS2 API Key -->
-        <meta-data
-            android:name="com.epson.epos2.apikey"
-            android:value="@string/epson_api_key" />
-        
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

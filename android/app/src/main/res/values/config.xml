@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Epson ePOS2 API Key -->
-    <!-- Replace YOUR_API_KEY_HERE with your actual Epson API key -->
-    <!-- Get your API key from: https://www.epson-biz.com/modules/pos/index.php?page=epos2_developer -->
-    <string name="epson_api_key">YOUR_API_KEY_HERE</string>
-</resources>

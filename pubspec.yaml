@@ -1,4 +1,4 @@
-name: pos_emaar
+name: epos_printer_app
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -34,18 +34,7 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  epson_usb_printer: ^1.0.4
-  epson_epos: ^0.0.2
-  esc_pos_utils: ^1.1.0
   webview_flutter: ^4.4.2
-  webview_flutter_android: ^3.12.1
-  permission_handler: ^11.3.1
-  # screenshot removed; using RepaintBoundary-based capture
-  flutter_html: ^3.0.0-beta.2
-  path_provider: ^2.0.15
-  barcode: ^2.2.4
-  image: ^3.3.0
-  flutter_svg: ^2.0.9
 
 dev_dependencies:
   flutter_test:
