@@ -56,7 +56,7 @@ class _EpsonAppState extends State<EpsonApp> {
             },
           ),
         )
-      ..loadRequest(Uri.parse('http://192.168.100.77:3001/')); // Default URL
+      ..loadRequest(Uri.parse('https://dev-conpos.emaar.ae')); // Default URL
     
     // Delay auto-connect to ensure widget tree is fully built
     WidgetsBinding.instance.addPostFrameCallback((_) {
