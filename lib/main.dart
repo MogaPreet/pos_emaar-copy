@@ -8,6 +8,10 @@ import 'package:epson_epos/epson_epos.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'printer_utils.dart';
+import 'package:flutter_html/flutter_html.dart';
+import 'dart:ui' as ui;
+import 'dart:typed_data';
+import 'package:flutter/rendering.dart';
 
 void main() {
   // Enable Android WebView debugging
@@ -56,6 +60,10 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
   // Toast message settings
   bool _showToastMessages = false;
   int _buttonTapCount = 0;
+
+  // Offstage HTML render key + buffer
+  final GlobalKey _htmlRepaintKey = GlobalKey();
+  String _pendingHtmlForPrint = '';
 
   @override
   void initState() {
@@ -108,7 +116,7 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
           },
         ),
       )
-      ..loadRequest(Uri.parse('https://dbaccess.thinkry.tech/'));
+      ..loadRequest(Uri.parse('http://192.168.100.77:3001/'));
   }
 
   void _injectWebBridge() {
@@ -167,6 +175,14 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
           if (!window.printTicket) {
             window.printTicket = function(data) {
               try { sendToFlutter(typeof data === 'string' ? data : JSON.stringify({action:'printTicket', data:data})); } catch (e) {}
+            };
+          }
+          if (!window.printHtml) {
+            window.printHtml = function(htmlContent) {
+              try { 
+                // Send HTML content directly to Flutter for rendering and printing
+                sendToFlutter(htmlContent); 
+              } catch (e) { console.error('printHtml error', e); }
             };
           }
           console.log('Flutter webview bridge injected');
@@ -486,7 +502,7 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
       _showMessage('Sending receipt to printer...');
       
       // Create test print commands using PrinterUtils
-      List<Map<String, dynamic>> commands = PrinterUtils.buildEpsonCommandsForReceipt();
+      List<Map<String, dynamic>> commands = await PrinterUtils.buildPrintRecipt({});
       
       // Print using PrinterUtils
       bool success = await PrinterUtils.printToPrinter(_selectedPrinter!, commands);
@@ -502,25 +518,103 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
     }
   }
 
-  void _handlePrintFromWeb(String jsonMessage) {
+  void _handlePrintFromWeb(String jsonMessage) async {
     try {
       log("Received print request from web: $jsonMessage");
-      
+
       // Parse the JSON from web
       final Map<String, dynamic> receiptData = jsonDecode(jsonMessage);
-      
-      // Build Epson commands from the received JSON
-      final commands = PrinterUtils.buildEpsonCommandsFromJson(receiptData);
-      
-      // Print the receipt
-      if (_selectedPrinter != null) {
+
+      print("jsonMessage111: $jsonMessage");
+      print("action: ${receiptData['action']}");
+
+      if (_selectedPrinter == null) {
+        _showMessage('No printer connected. Please check connection.', isError: true);
+        return;
+      }
+
+      if (receiptData['action'] == 'voidTransaction') {
+        final commands = await PrinterUtils.buildPrintVoid(receiptData);
+        _printReceipt(commands);
+      } else if (receiptData['action'] == 'printTicket') {
+        print("printTicket: $receiptData");
+        final commands = await PrinterUtils.buildPrintticket(receiptData);
         _printReceipt(commands);
       } else {
-        _showMessage('No printer connected. Please check connection.', isError: true);
+        // Default to normal receipt print
+        final commands = await PrinterUtils.buildPrintRecipt(receiptData);
+        _printReceipt(commands);
       }
     } catch (e) {
       log("Error handling print from web: $e");
       _showMessage('Failed to process print request.', isError: true);
+    }
+  }
+
+  void _handleHtmlPrint(String htmlContent) {
+    try {
+      log("Received HTML print request");
+      
+      if (_selectedPrinter == null) {
+        _showMessage('No printer connected. Please check connection.', isError: true);
+        return;
+      }
+      
+      _showMessage('Rendering HTML content for printing...');
+      
+      _renderHtmlAndPrint(htmlContent);
+      
+    } catch (e) {
+      log("Error handling HTML print: $e");
+      _showMessage('Failed to process HTML print request.', isError: true);
+    }
+  }
+
+  Future<void> _renderHtmlAndPrint(String htmlContent) async {
+    try {
+      setState(() { _pendingHtmlForPrint = htmlContent; });
+      // allow offstage tree to layout/paint
+      await Future.delayed(const Duration(milliseconds: 20));
+      await WidgetsBinding.instance.endOfFrame;
+
+      final renderObject = _htmlRepaintKey.currentContext?.findRenderObject();
+      if (renderObject == null || renderObject is! RenderRepaintBoundary) {
+        _showMessage('Failed to prepare HTML for printing.', isError: true);
+        return;
+      }
+      final RenderRepaintBoundary boundary = renderObject as RenderRepaintBoundary;
+      final ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) {
+        _showMessage('Failed to capture HTML image.', isError: true);
+        return;
+      }
+      final Uint8List pngBytes = byteData.buffer.asUint8List();
+
+      final EpsonEPOSCommand cmd = EpsonEPOSCommand();
+      final List<Map<String, dynamic>> commands = [];
+      commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
+      commands.add(cmd.appendBitmap(
+        pngBytes,
+        image.width,
+        image.height,
+        0,
+        0,
+      ));
+      commands.add(cmd.addFeedLine(2));
+      commands.add(cmd.addCut(EpsonEPOSCut.CUT_FEED));
+
+      final success = await PrinterUtils.printToPrinter(_selectedPrinter!, commands);
+      if (success) {
+        _showMessage('✓ HTML content printed successfully!');
+      } else {
+        _showMessage('Failed to print HTML content. Please check printer.', isError: true);
+      }
+    } catch (e) {
+      log('Render/print HTML error: $e');
+      _showMessage('Error printing HTML content.', isError: true);
+    } finally {
+      if (mounted) setState(() { _pendingHtmlForPrint = ''; });
     }
   }
 
@@ -554,10 +648,35 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
       body: Stack(
         children: [
           WebViewWidget(controller: _webViewController),
+          // Offstage HTML renderer for printing
+          Offstage(
+            offstage: true,
+            child: Center(
+              child: RepaintBoundary(
+                key: _htmlRepaintKey,
+                child: Container(
+                  width: 384,
+                  color: Colors.white,
+                  child: Html(
+                    data: _pendingHtmlForPrint,
+                    style: {
+                      "body": Style(
+                        margin: Margins.zero,
+                        padding: HtmlPaddings.zero,
+                        fontSize: FontSize(12),
+                        color: Colors.black,
+                      ),
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
           if (_showStatusOverlay) _buildStatusOverlay(),
+          if (_currentState == 'connected') _buildConnectionButtons(),
         ],
       ),
-      floatingActionButton: _currentState == 'connected' ? _buildConnectionButtons() : AnimatedBuilder(
+      floatingActionButton: _currentState == 'connected' ? null : AnimatedBuilder(
         animation: _blinkAnimation,
         builder: (context, child) {
           return Opacity(
@@ -768,57 +887,83 @@ class _MyAppState extends State<MyApp> with TickerProviderStateMixin {
   }
 
   Widget _buildConnectionButtons() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        // WiFi Button
-        Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: FloatingActionButton.extended(
-            heroTag: "wifi",
-            onPressed: () {
-              _handleConnectionButtonTap();
-              if (_connectionType == 'wifi') {
-                _performTestPrint();
-              }
-            },
-            backgroundColor: _connectionType == 'wifi' ? Colors.green : Colors.grey.shade700,
-            icon: Icon(
-              Icons.wifi,
-              color: _connectionType == 'wifi' ? Colors.white : Colors.grey.shade400,
-            ),
-            label: Text(
-              'WiFi',
-              style: TextStyle(
-                color: _connectionType == 'wifi' ? Colors.white : Colors.grey.shade400,
-                fontWeight: FontWeight.w500,
+    return Positioned(
+      top: 50,
+      right: 20,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Printer Button (left)
+          Container(
+            margin: const EdgeInsets.only(right: 4),
+            child: Container(
+              width: 25,
+              height: 25,
+              decoration: BoxDecoration(
+                color: _connectionType == 'usb' ? Colors.green : Colors.grey.shade700,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 3,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12.5),
+                  onTap: () {
+                    _handleConnectionButtonTap();
+                    if (_connectionType == 'usb') {
+                      _performTestPrint();
+                    }
+                  },
+                  child: Icon(
+                    Icons.print,
+                    color: _connectionType == 'usb' ? Colors.white : Colors.grey.shade400,
+                    size: 11,
+                  ),
+                ),
               ),
             ),
           ),
-        ),
-        // USB Button
-        FloatingActionButton.extended(
-          heroTag: "usb",
-          onPressed: () {
-            _handleConnectionButtonTap();
-            if (_connectionType == 'usb') {
-              _performTestPrint();
-            }
-          },
-          backgroundColor: _connectionType == 'usb' ? Colors.green : Colors.grey.shade700,
-          icon: Icon(
-            Icons.usb,
-            color: _connectionType == 'usb' ? Colors.white : Colors.grey.shade400,
-          ),
-          label: Text(
-            'USB',
-            style: TextStyle(
-              color: _connectionType == 'usb' ? Colors.white : Colors.grey.shade400,
-              fontWeight: FontWeight.w500,
+          // WiFi Button (right)
+          Container(
+            width: 25,
+            height: 25,
+            decoration: BoxDecoration(
+              color: _connectionType == 'wifi' ? Colors.green : Colors.grey.shade700,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.2),
+                  blurRadius: 3,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12.5),
+                onTap: () {
+                  _handleConnectionButtonTap();
+                  if (_connectionType == 'wifi') {
+                    _performTestPrint();
+                  }
+                },
+                child: Icon(
+                  Icons.wifi,
+                  color: _connectionType == 'wifi' ? Colors.white : Colors.grey.shade400,
+                  size: 11,
+                ),
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 

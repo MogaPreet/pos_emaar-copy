@@ -1,12 +1,19 @@
 import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
+// Removed: ui, typed_data (not needed here)
 import 'package:epson_epos/epson_epos.dart';
+import 'package:esc_pos_utils/esc_pos_utils.dart';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
+import 'package:barcode/barcode.dart' as barcode_lib;
+import 'package:image/image.dart' as img;
+// Removed: flutter_html and screenshot (HTML rendering handled in main.dart)
 
 class PrinterUtils {
   // Method channel for USB permissions
   static const platform = MethodChannel('com.emaar.pos.usb_permissions');
+   
 
   /// Request USB permissions for Epson TM-T88VI thermal printer
   /// Returns true if permission is granted, false otherwise
@@ -281,7 +288,49 @@ class PrinterUtils {
 
   /// Builds Epson commands from JSON data received from web
   /// Returns a List<Map<String, dynamic>> ready to pass to Epson print APIs.
-  static List<Map<String, dynamic>> buildEpsonCommandsFromJson(Map<String, dynamic> receiptData) {
+  static Future<Uint8List?> generateBarcodePngBytes(String data,
+      {int width = 300, int height = 80}) async {
+    try {
+      final bc = barcode_lib.Barcode.code128();
+      final svg = bc.toSvg(data, width: width.toDouble(), height: height.toDouble());
+
+      // For now, create a simple barcode pattern as PNG bytes
+      final pngBytes = await _createSimpleBarcodePng(data, width, height);
+      return pngBytes;
+    } catch (e) {
+      print('Error generating barcode: $e');
+      return null;
+    }
+  }
+
+  static Future<List<int>> _customEscPos(String barcode) async {
+    try {
+      final profile = await CapabilityProfile.load();
+      final generator = Generator(PaperSize.mm80, profile);
+      List<int> bytes = [];
+      final List<String> barData = barcode.split('');
+      // bytes += generator.barcode(Barcode.upcA(barData));
+      // bytes += generator.feed(2);
+
+      Uint8List barcodeBytes = Uint8List.fromList(barcode.codeUnits);
+
+      bytes += generator.barcode(
+        Barcode.code128(barcodeBytes)
+      );
+
+    bytes += generator.feed(2);
+
+      return bytes;
+    } catch (e) {
+      print('Error in _customEscPos: $e');
+      return [];
+    }
+  }
+
+
+   static Future<List<Map<String, dynamic>>> buildPrintRecipt(Map<String, dynamic> receiptData) async {
+
+    
     final EpsonEPOSCommand cmd = EpsonEPOSCommand();
     final List<Map<String, dynamic>> commands = [];
 
@@ -291,7 +340,7 @@ class PrinterUtils {
     final totals = receiptData['totals'] as Map<String, dynamic>? ?? {};
     final footer = receiptData['footer'] as Map<String, dynamic>? ?? {};
 
-    // ========== HEADER ==========
+  
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
     if (header['company'] != null) commands.add(cmd.append('${header['company']}\n'));
     if (header['location'] != null) commands.add(cmd.append('${header['location']}\n'));
@@ -403,6 +452,9 @@ class PrinterUtils {
       }
     }
 
+      commands.add(cmd.rawData(Uint8List.fromList(await _customEscPos("123456789012"))));
+
+
     // ========== CUT PAPER ==========
     commands.add(cmd.addFeedLine(2));
     commands.add(cmd.addCut(EpsonEPOSCut.CUT_FEED));
@@ -410,49 +462,41 @@ class PrinterUtils {
     return commands;
   }
 
-  /// Builds a list of EpsonEPOS commands for printing a receipt.
-  /// Returns a List<Map<String, dynamic>> ready to pass to Epson print APIs.
-  static List<Map<String, dynamic>> buildEpsonCommandsForReceipt() {
+
+  static Future<List<Map<String, dynamic>>> buildPrintVoid(Map<String, dynamic> receiptData) async {
+
+    
     final EpsonEPOSCommand cmd = EpsonEPOSCommand();
     final List<Map<String, dynamic>> commands = [];
 
+    // Extract data from JSON
+    final header = receiptData['header'] as Map<String, dynamic>? ?? {};
+    final items = receiptData['items'] as List<dynamic>? ?? [];
+    final totals = receiptData['totals'] as Map<String, dynamic>? ?? {};
+    final footer = receiptData['footer'] as Map<String, dynamic>? ?? {};
 
-    const itemArray = [
-      {
-        'qty': '1',
-        'item': 'WEB ATT CH (At The Top) AT THE TOP 148 Floor',
-        'price': 114.00,
-      },
-      {
-        'qty': '1',
-        'item': 'Slider + 2 Pcs Chicken Wings AT THE TOP 148 Floor',
-        'price': 118.00,
-      },
-    ];
-
-    // ========== HEADER ==========
+  
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
-    //commands.add(cmd.setTextStyle(bold: true, underline: false, doubleWidth: true, font: EpsonEPOSTextFont.fontB));
-    commands.add(cmd.append('EMAAR ENTERTAINMENT LLC\n'));
-    commands.add(cmd.append('At The Top\n'));
-    commands.add(cmd.append('TRNNO 100067521300003\n'));
-    commands.add(cmd.append('Order No: 3921893\n'));
-    commands.add(cmd.append('Dubai Mall\n'));
+    if (header['company'] != null) commands.add(cmd.append('${header['company']}\n'));
+    if (header['location'] != null) commands.add(cmd.append('${header['location']}\n'));
+    if (header['trnNo'] != null) commands.add(cmd.append('TRNNO ${header['trnNo']}\n'));
+    if (header['orderNo'] != null) commands.add(cmd.append('Order No: ${header['orderNo']}\n'));
+    if (header['venue'] != null) commands.add(cmd.append('${header['venue']}\n'));
     commands.add(cmd.addFeedLine(1));
 
     // TAX INVOICE
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
-    //commands.add(cmd.setTextStyle(bold: true, underline: false, doubleWidth: true, font: EpsonEPOSTextFont.fontB));
-    commands.add(cmd.append('TAX INVOICE\n'));
+    if (header['taxInvoiceText'] != null) commands.add(cmd.append('${header['taxInvoiceText']}\n'));
     commands.add(cmd.addFeedLine(1));
 
     // ========== SALE DETAILS ==========
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
-    //ommands.add(cmd.setTextStyle(bold: false, underline: false, doubleWidth: true, font: EpsonEPOSTextFont.fontA));
-    commands.add(cmd.append('Sale No: 805\n'));
-    commands.add(cmd.append('Date: 2025-10-14     Time: 08:49 AM\n'));
-    commands.add(cmd.append('POS No: pos-1\n'));
-    commands.add(cmd.append('User ID: 2\n'));
+    if (header['saleNo'] != null) commands.add(cmd.append('Sale No: ${header['saleNo']}\n'));
+    if (header['date'] != null && header['time'] != null) {
+      commands.add(cmd.append('Date: ${header['date']}     Time: ${header['time']}\n'));
+    }
+    if (header['posNo'] != null) commands.add(cmd.append('POS No: ${header['posNo']}\n'));
+    if (header['userId'] != null) commands.add(cmd.append('User ID: ${header['userId']}\n'));
     commands.add(cmd.append('------------------------------------------\n'));
 
     // ========== TABLE HEADER ==========
@@ -460,20 +504,17 @@ class PrinterUtils {
     commands.add(cmd.append('-----------------------------------------------\n'));
 
     // ========== ITEMS ==========
-    // Use itemArray for dynamic lines, with word-wrap
-    for (var item in itemArray) {
-      // Fix: cast 'item' key to String, 'price' to double
-      final description = (item['item'] ?? '').toString();
+    for (var item in items) {
+      final description = (item['description'] ?? '').toString();
       final price = (item['price'] is num) ? (item['price'] as num).toDouble() : 0.0;
-      final String qty = (item['qty'] ?? '1').toString(); // Hardcoded for now, can extend to support qty
+      final String qty = (item['qty'] ?? '1').toString();
 
-      // Word wrap the description to fit 32 chars (excluding qty and price col width)
-      int lineWidth = 39; // Adjust based on printer width, here 39 for 42-char receipt minus price col
-      int descColStart = 6; // 'QTY   ' is 6 chars
-      int priceColWidth = 12; // AMOUNT column (incl. some spacing)
+      // Word wrap the description
+      int lineWidth = 39;
+      int descColStart = 6;
+      int priceColWidth = 12;
       int descMaxWidth = lineWidth - descColStart - priceColWidth;
 
-      // Split description into lines
       List<String> descLines = [];
       String descRemainder = description;
       while (descRemainder.isNotEmpty) {
@@ -481,59 +522,73 @@ class PrinterUtils {
           descLines.add(descRemainder);
           break;
         }
-        // Find last space within max width, or hard break
         int breakIndex = descRemainder.lastIndexOf(' ', descMaxWidth);
         if (breakIndex == -1) breakIndex = descMaxWidth;
         descLines.add(descRemainder.substring(0, breakIndex).trimRight());
         descRemainder = descRemainder.substring(breakIndex).trimLeft();
       }
 
-      // Print item line(s)
       for (int i = 0; i < descLines.length; i++) {
         if (i == 0) {
-          // First line: print QTY, desc, price (right aligned)
           String desc = descLines[0];
-          String qtyCol = qty.padRight(5); // QTY + 4 spaces to align with header
+          String qtyCol = qty.padRight(5);
           String amtCol = price.toStringAsFixed(2).padLeft(priceColWidth);
           commands.add(cmd.append('$qtyCol$desc'.padRight(lineWidth - priceColWidth) + amtCol + '\n'));
         } else {
-          // Subsequent lines: indent to align with desc col
           String desc = descLines[i];
           commands.add(cmd.append('      $desc\n'));
         }
       }
-
-      // Add a separator after each item
-    
     }
-  commands.add(cmd.append('-----------------------------------------------\n'));
+    commands.add(cmd.append('-----------------------------------------------\n'));
+
     // ========== TOTALS ==========
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
-    commands.add(cmd.append("DISCOUNT".padRight(36) + "0.00\n")); 
-    commands.add(cmd.append("TOTAL EXCL VAT".padRight(36) + "108.30\n"));
-    commands.add(cmd.append("VAT 5%".padRight(36) + "5.70\n"));
-    commands.add(cmd.append("TOTAL INCL VAT".padRight(36) + "114.00\n"));
-    commands.add(cmd.append("CHANGE".padRight(36) + "0.00\n"));
+    if (totals['discount'] != null) {
+      final discount = (totals['discount'] is num) ? (totals['discount'] as num).toDouble() : 0.0;
+      commands.add(cmd.append("DISCOUNT".padRight(36) + discount.toStringAsFixed(2) + '\n'));
+    }
+    if (totals['totalExclVat'] != null) {
+      final totalExclVat = (totals['totalExclVat'] is num) ? (totals['totalExclVat'] as num).toDouble() : 0.0;
+      commands.add(cmd.append("TOTAL EXCL VAT".padRight(36) + totalExclVat.toStringAsFixed(2) + '\n'));
+    }
+    if (totals['vatPercent'] != null && totals['vatAmount'] != null) {
+      final vatAmount = (totals['vatAmount'] is num) ? (totals['vatAmount'] as num).toDouble() : 0.0;
+      commands.add(cmd.append("VAT ${totals['vatPercent']}%".padRight(36) + vatAmount.toStringAsFixed(2) + '\n'));
+    }
+    if (totals['totalInclVat'] != null) {
+      final totalInclVat = (totals['totalInclVat'] is num) ? (totals['totalInclVat'] as num).toDouble() : 0.0;
+      commands.add(cmd.append("TOTAL INCL VAT".padRight(36) + totalInclVat.toStringAsFixed(2) + '\n'));
+    }
+    if (totals['change'] != null) {
+      final change = (totals['change'] is num) ? (totals['change'] as num).toDouble() : 0.0;
+      commands.add(cmd.append("CHANGE".padRight(36) + change.toStringAsFixed(2) + '\n'));
+    }
     commands.add(cmd.append('------------------------------------------\n'));
 
     // TOTAL
-    //commands.add(cmd.setTextStyle(bold: true, underline: false, doubleWidth: true, font: EpsonEPOSTextFont.fontB));
-    commands.add(cmd.append('TOTAL: 114.00\n'));
+    if (totals['grandTotal'] != null) {
+      final grandTotal = (totals['grandTotal'] is num) ? (totals['grandTotal'] as num).toDouble() : 0.0;
+      commands.add(cmd.append('TOTAL: ${grandTotal.toStringAsFixed(2)}\n'));
+    }
     commands.add(cmd.addFeedLine(1));
 
     // ========== FOOTER ==========
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
-    //commands.add(cmd.setTextStyle(bold: false, underline: false, doubleWidth: true, font: EpsonEPOSTextFont.fontA));
-    commands.add(cmd.append('THANK YOU FOR VISITING US\n'));
+    if (footer['thankYou'] != null) commands.add(cmd.append('${footer['thankYou']}\n'));
     commands.add(cmd.addFeedLine(1));
-
-    commands.add(cmd.append('*** TERMS AND CONDITIONS ***\n'));
+    if (footer['termsTitle'] != null) commands.add(cmd.append('${footer['termsTitle']}\n'));
     commands.add(cmd.addFeedLine(1));
-
+    
     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
-    commands.add(cmd.append('1. Tickets can be used once only and may not be replaced,\n'));
-    commands.add(cmd.append('   refunded or exchanged for any reason whatsoever.\n'));
-    commands.add(cmd.append('2. Find full terms on www.atthetop.ae\n'));
+    if (footer['termsLines'] != null) {
+      for (var line in footer['termsLines'] as List<dynamic>) {
+        commands.add(cmd.append('$line\n'));
+      }
+    }
+
+      commands.add(cmd.rawData(Uint8List.fromList(await _customEscPos("123456789012"))));
+
 
     // ========== CUT PAPER ==========
     commands.add(cmd.addFeedLine(2));
@@ -542,6 +597,142 @@ class PrinterUtils {
     return commands;
   }
 
+  static Future<List<Map<String, dynamic>>> buildPrintticket(Map<String, dynamic> receiptData) async {
+
+    print("buildPrintticket: $receiptData");
+    final EpsonEPOSCommand cmd = EpsonEPOSCommand();
+    final List<Map<String, dynamic>> commands = [];
+
+    // for (var item in receiptData['ticketData']) {
+    //     // Header (centered)
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
+    //     commands.add(cmd.append('EMAAR ENTERTAINMENT LLC\n'));
+    //     commands.add(cmd.append('At The Top\n'));
+    //     commands.add(cmd.append('TRNNO 100067521300003\n'));
+    //     commands.add(cmd.append('PO BOX NO 9440\n'));
+    //     commands.add(cmd.append('DUBAI U.A.E\n'));
+    //     commands.add(cmd.addFeedLine(1));
+
+    //     // Spacer
+    //     commands.add(cmd.addFeedLine(1));
+
+    //     // Dashed HR (simulate dashed by dashes)
+    //     commands.add(cmd.append('------------------------------------------\n'));
+    //     // Centered instruction text
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
+    //     commands.add(cmd.append('Please go to the counter get the ticket.\n'));
+    //     // Dashed HR
+    //     commands.add(cmd.append('------------------------------------------\n'));
+
+    //     // Spacer and bold centered ticket notice
+    //     commands.add(cmd.addFeedLine(1));
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
+    //     commands.add(cmd.append('*** THIS IS YOUR  TICKET ***\n'));
+    //     commands.add(cmd.addFeedLine(1));
+
+    //     // Event Info (left-aligned)
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
+    //     commands.add(cmd.append('Event Name: At The Top\n'));
+    //     commands.add(cmd.append('Event Date: 2025-10-05\n'));
+    //     commands.add(cmd.append('Event Time: 8:30 AM\n'));
+    //     commands.add(cmd.append('Item Name: ATT + RT  WEB CHILD (1), ATT + RT  WEB ADULT (1), WEB CHILD (1), WEB ADULT (1)\n'));
+
+    //     // Spacer for the barcode
+    //     commands.add(cmd.addFeedLine(1));
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.CENTER));
+    //     // Render barcode using custom ESC/POS routine (simulate unique ticket ID, here fixed)
+    //     for(var bitem in item['barcodeValue']) {
+    //     final ticketBarcode = bitem.toString();
+    //      commands.add(cmd.rawData(Uint8List.fromList(await _customEscPos(ticketBarcode))));
+    //       // Show code under barcode
+    //       commands.add(cmd.append('$ticketBarcode\n'));
+    //       commands.add(cmd.addFeedLine(1));    
+    //     }
+
+    //     // Solid horizontal rule
+    //     commands.add(cmd.append('==========================================\n'));
+    //     // Trans Date/Time and Transaction/Node/User details (left-aligned)
+    //     commands.add(cmd.addTextAlign(EpsonEPOSTextAlign.LEFT));
+    //     commands.add(cmd.append('Trans Date/Time: 2025-10-05 17:26:40.926Z\n'));
+    //     commands.add(cmd.append('Trans: 153   Node: 189   User ID: 2\n'));
+
+    //     // Feed/cut at end
+    //     commands.add(cmd.addFeedLine(2));
+    //     commands.add(cmd.addCut(EpsonEPOSCut.CUT_FEED));
+    // }
+      commands.add(cmd.rawData(Uint8List.fromList(await _customEscPos("3921893"))));
+    commands.add(cmd.addFeedLine(2));
+        commands.add(cmd.addCut(EpsonEPOSCut.CUT_FEED));
+
+    return commands;
+  }
+
+
+  /// Create a simple barcode pattern as PNG bytes optimized for thermal printers
+  static Future<Uint8List?> _createSimpleBarcodePng(String value, int width, int height) async {
+    try {
+      // Create a simple barcode pattern using the image package
+      final img.Image image = img.Image(width, height);
+      
+      // Fill with white background
+      img.fill(image, img.getColor(255, 255, 255));
+      
+      // Create barcode pattern - make it more visible and printer-friendly
+      final int barWidth = 3; // Slightly thicker bars
+      final int startX = 20;
+      int currentX = startX;
+      
+      // Generate bars based on value hash - create a more realistic barcode pattern
+      final int hash = value.hashCode.abs();
+      
+      // Start with guard bars (thick bars at beginning and end)
+      for (int y = 10; y < height - 10; y++) {
+        for (int x = currentX; x < currentX + barWidth * 2 && x < width; x++) {
+          image.setPixel(x, y, img.getColor(0, 0, 0));
+        }
+      }
+      currentX += barWidth * 2 + 2;
+      
+      // Add data bars
+      for (int i = 0; i < 15 && currentX < width - 30; i++) {
+        final bool isBar = (hash >> i) & 1 == 1;
+        if (isBar) {
+          // Draw black bar
+          for (int y = 10; y < height - 10; y++) {
+            for (int x = currentX; x < currentX + barWidth && x < width; x++) {
+              image.setPixel(x, y, img.getColor(0, 0, 0));
+            }
+          }
+        }
+        currentX += barWidth + 1; // Add spacing between bars
+      }
+      
+      // End with guard bars
+      for (int y = 10; y < height - 10; y++) {
+        for (int x = currentX; x < currentX + barWidth * 2 && x < width; x++) {
+          image.setPixel(x, y, img.getColor(0, 0, 0));
+        }
+      }
+      
+      // Add value text area (white space for text)
+      final int textY = height - 15;
+      for (int x = startX; x < currentX + barWidth * 2 && x < width; x++) {
+        for (int y = textY; y < height - 5; y++) {
+          image.setPixel(x, y, img.getColor(255, 255, 255));
+        }
+      }
+      
+      print('Created barcode image: ${width}x${height}, bars: ${currentX - startX}px wide');
+      
+      // Convert to PNG bytes
+      final List<int> pngBytes = img.encodePng(image);
+      print('PNG bytes length: ${pngBytes.length}');
+      return Uint8List.fromList(pngBytes);
+    } catch (e) {
+      print('Simple barcode PNG creation error: $e');
+      return null;
+    }
+  }
 
   /// Complete auto-start sequence
   /// Returns map with results: {'permission': bool, 'printers': List, 'selected': EpsonPrinterModel?}

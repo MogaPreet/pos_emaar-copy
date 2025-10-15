@@ -153,7 +153,7 @@ Print completed successfully
 
 2. **lib/printer_utils.dart**
    - Added `buildEpsonCommandsFromJson()` static method
-   - Kept existing `buildEpsonCommandsForReceipt()` for testing
+   - Kept existing `buildPrintRecipt()` for testing
 
 ## Files Created
 

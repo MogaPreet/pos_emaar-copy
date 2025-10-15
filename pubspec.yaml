@@ -40,6 +40,12 @@ dependencies:
   webview_flutter: ^4.4.2
   webview_flutter_android: ^3.12.1
   permission_handler: ^11.3.1
+  # screenshot removed; using RepaintBoundary-based capture
+  flutter_html: ^3.0.0-beta.2
+  path_provider: ^2.0.15
+  barcode: ^2.2.4
+  image: ^3.3.0
+  flutter_svg: ^2.0.9
 
 dev_dependencies:
   flutter_test:
